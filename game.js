@@ -3,7 +3,6 @@
   const demoTracks = [{ trackId: 'demo-1', trackName: 'Demo', artistName: 'Artist', previewUrl: '' }];
   const $ = id => document.getElementById(id);
   const state = { catalog: [], queue: [], current: null, options: [], round: 0, score: 0, streak: 0, bestStreak: 0, correct: 0, lives: CONFIG.maxLives, answered: false, clipStarted: false, timer: null, hintUsed: false, reviveUsed: false, ysdk: null, usingDemo: false, preparingGame: false };
-  const audioValidityCache = new Map();
   let stats = { bestScore: 0, bestStreak: 0, roundsPlayed: 0 };
 
   // === FIREBASE НАСТРОЙКИ (ВСТАВЬ СВОИ) ===
@@ -135,6 +134,7 @@
     state.ysdk.adv.showRewardedVideo({ callbacks: { onOpen: sysPauseAudio, onRewarded: onReward, onClose: sysResumeAudio, onError: () => { sysResumeAudio(); toast('Реклама недоступна'); if (onFail) onFail(); } } });
   }
 
+  // === СЕТЕВАЯ ЛОГИКА (ЛОББИ) ===
   $('btn1v1').addEventListener('click', () => { showFullscreenAd(); startMatchmaking(); }); $('btnCustom').addEventListener('click', () => { showFullscreenAd(); showLobbyModal(); });
 
   function showLobbyModal() {
@@ -189,10 +189,12 @@
 
     mpRoomRef = db.ref('rooms/' + roomId);
     if (isHost) {
-      mpRoomRef.set({ type: roomType, state: 'waiting', host: myPlayerId, players: { [myPlayerId]: { name: player?.publicName || 'Я (Хост)', score: 0 } } });
+      mpRoomRef.onDisconnect().remove(); // Удаляем комнату, если хост закрыл вкладку
+      mpRoomRef.set({ type: roomType, state: 'waiting', host: myPlayerId, players: { [myPlayerId]: { name: player?.publicName || 'Я (Хост)', score: 0, roundState: 0 } } });
       if (roomType === 'custom') $('btnStartMp').style.display = 'block';
     } else {
-      mpRoomRef.child('players/' + myPlayerId).set({ name: player?.publicName || 'Игрок', score: 0 });
+      mpRoomRef.child('players/' + myPlayerId).onDisconnect().remove();
+      mpRoomRef.child('players/' + myPlayerId).set({ name: player?.publicName || 'Игрок', score: 0, roundState: 0 });
     }
 
     mpRoomRef.on('value', snap => {
@@ -214,18 +216,25 @@
         }
         $('mpOpponentScores').innerHTML = opsHtml || 'Ждем...';
 
-        if (data.queueKeys && !inMultiplayerMatch) {
+        // Старт игры (передаем ПОЛНЫЕ объекты, чтобы избежать ошибок маппинга)
+        if (data.sharedQueue && !inMultiplayerMatch) {
           inMultiplayerMatch = true;
           $('mpModal').classList.remove('open');
-          const mappedQueue = data.queueKeys.map(key => state.catalog.find(t => trackKey(t) === key)).filter(Boolean);
-          if (mappedQueue.length > 3) {
-            state.queue = mappedQueue;
-            resetGameData();
-            $('mpScoreBoard').style.display = 'block';
-            $('formulaCard').style.display = 'none'; $('catalogCard').style.display = 'none';
-            setScreen('game'); nextRound();
-          } else {
-            toast('Сбой синхронизации каталога'); leaveLobby();
+          state.queue = data.sharedQueue;
+          resetGameData();
+          $('mpScoreBoard').style.display = 'block';
+          $('formulaCard').style.display = 'none'; $('catalogCard').style.display = 'none';
+          setScreen('game');
+          db.ref(`rooms/${currentRoomId}/players/${myPlayerId}`).update({ roundState: 0 });
+          nextRound();
+        }
+
+        // ОЖИДАНИЕ ВСЕХ ИГРОКОВ (Синхронизация раундов)
+        if (inMultiplayerMatch && state.answered) {
+          const allAnswered = Object.keys(pl).length > 0 && Object.values(pl).every(p => (p.roundState || 0) >= state.round);
+          if (allAnswered) {
+            state.answered = false; // Блокируем повторное срабатывание
+            setTimeout(() => nextRound(), 1500); // Даем 1.5 секунды посмотреть верный ответ
           }
         }
       }
@@ -237,8 +246,16 @@
   function generateAndStartMpGame() {
     if (!isHost || !mpRoomRef) return;
     $('btnStartMp').disabled = true; $('btnStartMp').textContent = 'Готовим треки...';
-    const queueKeys = shuffle(state.catalog).slice(0, CONFIG.roundsPerGame).map(trackKey);
-    mpRoomRef.update({ state: 'playing', queueKeys: queueKeys });
+    // Отправляем готовые объекты, чтобы у всех точно совпадал список независимо от базы
+    const queueToShare = shuffle(state.catalog).slice(0, CONFIG.roundsPerGame).map(t => ({
+      trackName: t.trackName || 'Неизвестно',
+      artistName: t.artistName || 'Неизвестно',
+      previewUrl: t.previewUrl || ''
+    }));
+    mpRoomRef.update({ state: 'playing', sharedQueue: queueToShare }).catch(e => {
+      toast('Ошибка сети');
+      $('btnStartMp').disabled = false; $('btnStartMp').textContent = 'Начать игру';
+    });
   }
 
   $('mpModalClose').addEventListener('click', leaveLobby);
@@ -252,6 +269,7 @@
     $('mpModal').classList.remove('open'); setScreen('home');
   }
 
+  // --- ОДИНОЧНАЯ ИГРА И ЛОГИКА РАУНДОВ ---
   $('startBtn').addEventListener('click', startGameSolo);
 
   function startGameSolo() {
@@ -272,6 +290,7 @@
   function updateHearts() { $('hearts').innerHTML = Array.from({ length: CONFIG.maxLives }, (_, i) => `<span class="heart ${i < state.lives ? 'live' : ''}">♥</span>`).join('') }
 
   function buildOptions(answer) {
+    // В мультиплеере варианты могут генерироваться чуть иначе из-за урезанных объектов, поэтому ищем по имени
     const others = shuffle(state.catalog.filter(t => trackKey(t) !== trackKey(answer))).slice(0, 3);
     state.options = shuffle([answer, ...others]);
     $('answerGrid').innerHTML = state.options.map((t, i) => `<button class="answer-btn" data-index="${i}" type="button"><span class="answer-letter">${String.fromCharCode(65 + i)}</span><span class="answer-text"><b>${escapeHtml(t.trackName)}</b><span>${escapeHtml(t.artistName)}</span></span></button>`).join('');
@@ -297,8 +316,9 @@
 
   function nextRound() {
     clearTimer(); state.answered = false; state.clipStarted = false; state.hintUsed = false;
-    if (state.lives <= 0) { if (!state.reviveUsed) return askRevive(); return finishGame(); }
+    if (state.lives <= 0 && !isMultiplayer) { if (!state.reviveUsed) return askRevive(); return finishGame(); }
     if (state.round >= CONFIG.roundsPerGame) return finishGame();
+
     state.current = state.queue[state.round]; state.round++;
     $('roundKicker').textContent = `РАУНД ${state.round} / ${CONFIG.roundsPerGame}`;
     $('streakLabel').textContent = `Стрик ${state.streak}`;
@@ -326,8 +346,11 @@
       audio.currentTime = 0;
       audio.play().catch((e) => {
         clearTimer(); state.clipStarted = false;
-        if (isMultiplayer) { toast('Сбой трека. Угадывай наугад!'); $('playClipBtn').textContent = 'Сбой аудио'; $('roundStatus').textContent = 'Выбирай вариант'; }
-        else {
+        if (isMultiplayer) {
+          toast('Сбой трека. Угадывай наугад!');
+          $('playClipBtn').textContent = 'Сбой аудио';
+          $('roundStatus').textContent = 'Выбирай вариант';
+        } else {
           toast('Сбой аудио — заменяем трек');
           state.round--; state.queue.splice(state.round, 1); state.queue.push(state.catalog[Math.floor(Math.random() * state.catalog.length)]);
           nextRound(); setTimeout(playClip, 100);
@@ -341,8 +364,19 @@
       $('timeProgress').style.width = `${pct}%`;
       if (pct >= 100) {
         clearTimer(); try { audio.pause() } catch { }
-        $('roundStatus').textContent = 'Фрагмент закончился — выбирай';
-        $('playClipBtn').disabled = false; $('playClipBtn').textContent = '↻ Послушать ещё';
+
+        // Автоматически завершаем ход при таймауте в мультиплеере
+        if (isMultiplayer && !state.answered) {
+          state.answered = true;
+          document.querySelectorAll('.answer-btn').forEach(btn => btn.disabled = true);
+          state.streak = 0;
+          $('streakLabel').textContent = `Стрик ${state.streak}`;
+          $('roundStatus').textContent = 'Время вышло! Ждём остальных...';
+          if (mpRoomRef) { mpRoomRef.child('players/' + myPlayerId).update({ score: state.score, roundState: state.round }); }
+        } else if (!isMultiplayer) {
+          $('roundStatus').textContent = 'Фрагмент закончился — выбирай';
+          $('playClipBtn').disabled = false; $('playClipBtn').textContent = '↻ Послушать ещё';
+        }
       }
     }, 80);
   }
@@ -360,13 +394,21 @@
       $('roundStatus').textContent = `Верно! +${points} очков`; toast(`🔥 Стрик ${state.streak}!`);
     } else {
       sfx.wrong(); document.querySelectorAll('.answer-btn')[index].classList.add('wrong');
-      state.lives--; state.streak = 0; $('roundStatus').textContent = `Не угадал. Это «${state.current.trackName}»`; updateHearts();
+      if (!isMultiplayer) state.lives--; // Жизни сгорают только в одиночной игре
+      state.streak = 0; $('roundStatus').textContent = `Не угадал. Это «${state.current.trackName}»`; updateHearts();
     }
+
     $('scoreLabel').textContent = state.score.toLocaleString('ru-RU'); $('streakLabel').textContent = `Стрик ${state.streak}`; $('hintBtn').disabled = true;
 
-    if (isMultiplayer && mpRoomRef) { mpRoomRef.child('players/' + myPlayerId + '/score').set(state.score); }
-    setTimeout(() => nextRound(), correct ? 900 : 1300)
+    if (isMultiplayer && mpRoomRef) {
+      mpRoomRef.child('players/' + myPlayerId).update({ score: state.score, roundState: state.round });
+      $('roundStatus').textContent = 'Ждём остальных игроков...';
+    } else {
+      setTimeout(() => nextRound(), correct ? 900 : 1300);
+    }
   }
+
+  function useHint() { if (state.answered || state.hintUsed) return; showRewardedAd(() => { state.hintUsed = true; const buttons = [...document.querySelectorAll('.answer-btn')]; buttons.forEach((btn, i) => { if (state.options[i].artistName !== state.current.artistName) { btn.disabled = true; btn.style.opacity = '.35' } }); $('hintBtn').disabled = true; toast(`Подсказка: исполнитель — ${state.current.artistName}`) }) }
 
   function finishGame() {
     clearTimer();
