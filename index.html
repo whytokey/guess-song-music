@@ -5,13 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0e0b1c" />
   <meta http-equiv="Content-Security-Policy" content="default-src * 'self' 'unsafe-inline' 'unsafe-eval' https://*.firebaseio.com wss://*.firebaseio.com https://*.googleapis.com data: blob:; media-src * 'self' blob: data:;">
-  <title>5 секунд — Угадай песню</title>
   
+  <title>5 секунд — Угадай песню</title>
   <script src="https://yandex.ru/games/sdk/v2"></script>
-  <!-- Firebase SDK -->
+  <!-- Подключаем базу данных для мультиплеера -->
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
-  
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -19,110 +18,73 @@
     <header class="topbar">
       <div class="brand"><div class="brand-mark">♫</div><div><div class="brand-title">5 секунд</div><div class="brand-sub">угадай песню быстрее всех</div></div></div>
       <div class="top-actions">
-        <div class="volume-wrap"><span id="soundToggle">🔊</span><input type="range" id="volumeSlider" min="0" max="1" step="0.05" value="1"></div>
-        <button class="icon-btn" id="helpBtn" type="button">?</button>
+        <div class="volume-wrap">
+          <span id="soundToggle" title="Вкл/Выкл звук">🔊</span>
+          <input type="range" id="volumeSlider" min="0" max="1" step="0.05" value="1" title="Громкость">
+        </div>
+        <button class="icon-btn" id="helpBtn" type="button" aria-label="Правила">?</button>
       </div>
     </header>
-
-    <!-- ГЛАВНОЕ МЕНЮ -->
-    <section id="homeScreen" class="screen active">
-      <div class="home-grid">
-        <article class="hero-card">
-          <div>
-            <div class="eyebrow">Музыкальная дуэль</div>
-            <h1>Узнай хит.<br><span style="color:var(--coral)">За 5 секунд.</span></h1>
-            <p class="hero-copy">Выбери режим игры. Соревнуйся с друзьями в реальном времени или бей рекорды в одиночку.</p>
-          </div>
-          <div class="mode-buttons">
-            <button class="primary-btn" id="btnSolo" type="button">👤 Играть одному</button>
-            <button class="primary-btn" id="btn1v1" type="button" style="background:linear-gradient(135deg, #ffc266, #ff8d8d); color:#111;">⚔️ 1 на 1 (Поиск)</button>
-            <button class="primary-btn" id="btnCustom" type="button" style="background:linear-gradient(135deg, #82e2b0, #a987ff); color:#111;">👑 Играть с друзьями</button>
-          </div>
-          <div class="mini-note" style="margin-top:15px;">
-            <span id="catalogStatus" class="status-chip">Проверяем каталог<span class="loading-dots"><i></i><i></i><i></i></span></span>
-          </div>
-        </article>
-        <div class="side-stack">
-          <article class="side-card">
-            <h2>Твой прогресс (Соло)</h2>
-            <div class="metric-row"><span class="metric-label">Рекорд</span><strong class="metric-value" id="bestScore">0</strong></div>
-            <div class="metric-row"><span class="metric-label">Сыграно раундов</span><strong class="metric-value" id="roundsPlayed">0</strong></div>
-          </article>
+    <section id="homeScreen" class="screen active"><div class="home-grid"><article class="hero-card"><div><div class="eyebrow">Музыкальная дуэль</div><h1>Узнай хит.<br><span style="color:var(--coral)">За 5 секунд.</span></h1><p class="hero-copy">Слушай короткий фрагмент, выбирай из четырёх вариантов и собирай <strong>огненный стрик</strong>. Чем дольше серия — тем больше очков.</p></div><div class="hero-bottom">
+      
+      <!-- Оригинальное меню с новыми кнопками мультиплеера -->
+      <div style="display:flex; flex-direction:column; gap:10px; width:100%; max-width:320px;">
+        <button class="primary-btn" id="startBtn" type="button">Начать раунд (Соло) <span aria-hidden="true">→</span></button>
+        <div style="display:flex; gap:10px;">
+          <button class="secondary-btn" id="btn1v1" type="button" style="flex:1; border-color:var(--orange); color:var(--orange);">⚔️ 1 на 1</button>
+          <button class="secondary-btn" id="btnCustom" type="button" style="flex:1; border-color:var(--violet); color:var(--violet);">👑 С друзьями</button>
+        </div>
+        <div class="mini-note" style="margin-top:5px;">
+          В игре реальные 30-секундные превью треков.<br><span id="catalogStatus" class="status-chip">Проверяем каталог<span class="loading-dots"><i></i><i></i><i></i></span></span>
         </div>
       </div>
-    </section>
 
-    <!-- ЭКРАН ЛОББИ -->
-    <section id="lobbyScreen" class="screen">
-      <article class="hero-card" style="min-height:auto;">
-        <h2 id="lobbyTitle" style="margin-top:0;">Комната ожиданий</h2>
-        <div class="room-code-box" id="roomCodeBox" style="display:none;">
-          <span>Код комнаты:</span> <strong id="roomCodeDisplay">---</strong>
-        </div>
-        <div id="joinBox" style="margin-top:20px; display:none;">
-          <input type="text" id="roomCodeInput" placeholder="Введите код комнаты" maxlength="6" style="padding:12px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--text); width:100%; margin-bottom:10px;">
-          <button class="primary-btn" id="btnJoinRoom" type="button" style="width:100%;">Войти</button>
-        </div>
-        <div id="playersList" class="players-list" style="margin-top:20px;"></div>
-        <div style="margin-top:30px; display:flex; gap:10px;">
-          <button class="primary-btn" id="btnStartMultiplayer" type="button" style="display:none; flex:1;">Начать игру</button>
-          <button class="secondary-btn" id="btnLeaveLobby" type="button">Выйти</button>
-        </div>
-      </article>
-    </section>
-
-    <!-- ИГРОВОЙ ЭКРАН (Без изменений, используется для всех режимов) -->
-    <section id="gameScreen" class="screen">
-      <div class="game-layout">
-        <article class="game-card">
-          <div class="game-header">
-            <div><div class="round-kicker" id="roundKicker">РАУНД 1 / 10</div><h2 class="round-title">Что это за трек?</h2></div>
-            <div class="streak-badge">🔥 <span id="streakLabel">Стрик 0</span></div>
-          </div>
-          <div class="progress-track"><div id="timeProgress" class="progress-fill"></div></div>
-          <div class="play-zone">
-            <div class="cover-wrap">
-              <div id="cover" class="cover fallback"><span id="coverInitials">♫</span></div>
-              <div id="soundWave" class="sound-wave"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-            </div>
-            <h3 class="question">Узнаёшь?</h3>
-            <p id="questionSub" class="question-sub">Фрагмент готов — включай и выбирай</p>
-            <div id="answerGrid" class="answer-grid"></div>
-            <div class="game-footer">
-              <span id="roundStatus">Ждём твоего ответа</span>
-              <button id="playClipBtn" class="sound-btn" type="button">▶ Слушать 5 сек</button>
-            </div>
-          </div>
-        </article>
-        <aside class="game-aside">
-          <div class="hud-card">
-            <div class="hud-label">ОЧКИ</div><div class="hud-big" id="scoreLabel">0</div>
-            <div class="hud-label" style="margin-top:12px" id="livesContainer">ЖИЗНИ<div class="hearts" id="hearts"></div></div>
-          </div>
-          <div class="hud-card" id="multiplayerStats" style="display:none;">
-            <div class="hud-label">СОПЕРНИКИ</div>
-            <div id="opponentsScores" style="margin-top:10px; font-size:14px; color:var(--muted);"></div>
-          </div>
-          <button id="quitGameBtn" class="secondary-btn" type="button" style="width: 100%;">🚪 Выйти</button>
-        </aside>
+    </div></article><div class="side-stack"><article class="side-card"><h2>Твой прогресс</h2><div class="metric-row"><span class="metric-label">Рекорд</span><strong class="metric-value" id="bestScore">0</strong></div><div class="metric-row"><span class="metric-label">Лучший стрик</span><strong class="metric-value" id="bestStreak">0 <small>подряд</small></strong></div><div class="metric-row"><span class="metric-label">Сыграно раундов</span><strong class="metric-value" id="roundsPlayed">0</strong></div></article><article class="side-card"><h2>Как играть</h2><ul class="rule-list"><li><b>01</b><span>Включи 5-секундный фрагмент настоящего трека.</span></li><li><b>02</b><span>Выбери правильную песню из четырёх вариантов.</span></li><li><b>03</b><span>Не ошибайся: стрик умножает награду.</span></li></ul></article><article class="side-card"><h2>Сегодня в топе</h2><div id="leaderboardContainer"><div class="mini-leader"><span class="player" style="color:var(--muted)">Загрузка топа...</span></div></div></article></div></div></section>
+    
+    <section id="gameScreen" class="screen"><div class="game-layout"><article class="game-card"><div class="game-header"><div><div class="round-kicker" id="roundKicker">РАУНД 1 / 10</div><h2 class="round-title">Что это за трек?</h2></div><div class="streak-badge">🔥 <span id="streakLabel">Стрик 0</span></div></div><div class="progress-track"><div id="timeProgress" class="progress-fill"></div></div><div class="play-zone"><div class="cover-wrap"><div id="cover" class="cover fallback"><span id="coverInitials">♫</span></div><div id="soundWave" class="sound-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><h3 class="question">Узнаёшь?</h3><p id="questionSub" class="question-sub">Фрагмент готов — включай и выбирай</p><div id="answerGrid" class="answer-grid"></div><div class="game-footer"><span id="roundStatus">Ждём твоего ответа</span><button id="playClipBtn" class="sound-btn" type="button">▶ Слушать 5 сек</button></div></div></article><aside class="game-aside"><div class="hud-card"><div class="hud-label">ОЧКИ</div><div class="hud-big" id="scoreLabel">0</div><div class="hud-label" style="margin-top:12px">ЖИЗНИ</div><div class="hearts" id="hearts"><span class="heart live">♥</span><span class="heart live">♥</span><span class="heart live">♥</span></div><button id="hintBtn" class="hint-btn" type="button">💡 Подсказка <span style="opacity:.7">· реклама</span></button></div>
+      
+      <!-- Блок мультиплеера (появляется только при игре с друзьями) -->
+      <div class="hud-card" id="mpScoreBoard" style="display:none; border-color:var(--violet);">
+        <div class="hud-label" style="margin-bottom:12px; color:var(--violet);">ОЧКИ СОПЕРНИКОВ</div>
+        <div id="mpOpponentScores" style="font-size:14px;"></div>
       </div>
-    </section>
 
-    <section id="resultScreen" class="screen">
-      <article class="result-card">
-        <div class="result-orb">🏆</div><h2 id="resultTitle">Раунд окончен</h2><p id="resultCopy">Хорошая попытка.</p>
-        <div class="result-score"><strong id="finalScore">0</strong><span>очков</span></div>
-        <div class="result-actions">
-          <button id="againBtn" class="primary-btn" type="button">Ещё раз</button>
-          <button id="homeBtn" class="secondary-btn" type="button">На главную</button>
-        </div>
-      </article>
-    </section>
+      <div class="hud-card" id="formulaCard"><div class="hud-label" style="margin-bottom:12px">ФОРМУЛА СТРИКА</div><div class="metric-row"><span class="metric-label">1–2 подряд</span><strong class="score">×1</strong></div><div class="metric-row"><span class="metric-label">3–4 подряд</span><strong class="score">×2</strong></div><div class="metric-row"><span class="metric-label">5+ подряд</span><strong class="score">×3</strong></div></div><button id="quitGameBtn" class="secondary-btn" type="button" style="width: 100%;">🚪 Выйти на главную</button></aside></div></section>
+    
+    <section id="resultScreen" class="screen"><article class="result-card"><div class="result-orb">🏆</div><h2 id="resultTitle">Раунд окончен</h2><p id="resultCopy">Хорошая попытка. Ещё один раунд?</p><div class="result-score"><strong id="finalScore">0</strong><span>очков</span></div><div class="result-facts"><div class="result-fact"><b id="finalCorrect">0/10</b><span>угадано</span></div><div class="result-fact"><b id="finalStreak">0</b><span>лучший стрик</span></div><div class="result-fact"><b id="finalMultiplier">×1</b><span>множитель</span></div></div><div class="result-actions"><button id="againBtn" class="primary-btn" type="button">Играть ещё <span aria-hidden="true">→</span></button><button id="homeBtn" class="secondary-btn" type="button">На главную</button></div></article></section>
   </main>
+
+  <!-- Модалка правил -->
+  <div id="modal" class="modal-backdrop" role="dialog" aria-modal="true"><article class="modal-card"><button id="modalClose" class="modal-close" type="button">×</button><h2 id="modalTitle">Как играть</h2><p id="modalText">За раунд нужно угадать 10 песен. Ошибка отнимает жизнь.</p><div id="modalActions" class="modal-actions"><button id="modalOk" class="primary-btn" type="button">Понятно</button></div></article></div>
   
-  <div id="modal" class="modal-backdrop" role="dialog"><article class="modal-card"><button id="modalClose" class="modal-close" type="button">×</button><h2 id="modalTitle">Инфо</h2><p id="modalText"></p><div id="modalActions" class="modal-actions"></div></article></div>
-  <div id="toast" class="toast"></div>
-  <audio id="audio" preload="auto"></audio>
+  <!-- НОВАЯ Модалка Мультиплеера (Лобби) -->
+  <div id="mpModal" class="modal-backdrop" role="dialog" aria-modal="true">
+    <article class="modal-card">
+      <button id="mpModalClose" class="modal-close" type="button">×</button>
+      <h2 id="mpTitle">Мультиплеер</h2>
+      
+      <!-- Выбор действий -->
+      <div id="mpSelection">
+         <button class="primary-btn" id="btnCreateRoom" style="width:100%; margin-bottom:15px; background:var(--violet); color:#111;">+ Создать комнату</button>
+         <div style="display:flex; gap:8px;">
+           <input type="text" id="mpRoomInput" placeholder="Код комнаты" maxlength="6" style="flex:1; padding:12px; border-radius:12px; border:1px solid var(--line); background:rgba(255,255,255,0.05); color:var(--text); font-size:16px;">
+           <button class="secondary-btn" id="btnJoinRoom">Войти</button>
+         </div>
+      </div>
+
+      <!-- Экран ожидания (Лобби) -->
+      <div id="mpLobby" style="display:none;">
+         <div id="mpCodeBlock" style="text-align:center; padding:15px; background:rgba(255,255,255,0.05); border-radius:12px; margin-bottom:15px; border:1px dashed var(--violet);">
+           <span style="font-size:13px; color:var(--muted);">Код комнаты:</span><br>
+           <strong id="mpRoomCodeDisplay" style="font-size:28px; color:var(--violet); letter-spacing:4px;"></strong>
+         </div>
+         <div id="mpPlayersList" style="display:grid; gap:8px; margin-bottom:20px; max-height:150px; overflow-y:auto;"></div>
+         <button class="primary-btn" id="btnStartMp" style="width:100%; display:none;">Начать игру</button>
+      </div>
+    </article>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div><audio id="audio" preload="auto"></audio>
   <script src="game.js"></script>
 </body>
 </html>

@@ -2,34 +2,30 @@
   const CONFIG={roundsPerGame:10,clipSeconds:5,maxLives:3};
   const demoTracks=[{trackId:'demo-1',trackName:'Demo',artistName:'Artist',previewUrl:''}];
   const $=id=>document.getElementById(id);
-  const state={catalog:[],queue:[],current:null,options:[],round:0,score:0,streak:0,bestStreak:0,correct:0,lives:CONFIG.maxLives,answered:false,clipStarted:false,timer:null,hintUsed:false,reviveUsed:false,ysdk:null,usingDemo:false,preparingGame:false};
-  const audioValidityCache = new Map();
+  const state={catalog:[],queue:[],current:null,options:[],round:0,score:0,streak:0,bestStreak:0,correct:0,lives:CONFIG.maxLives,answered:false,clipStarted:false,timer:null,hintUsed:false,reviveUsed:false,ysdk:null,usingDemo:false};
   let stats = {bestScore:0, bestStreak:0, roundsPlayed:0};
   
-  // === FIREBASE НАСТРОЙКИ (ВСТАВЬ СВОИ ДАННЫЕ) ===
+  // === FIREBASE НАСТРОЙКИ (ВСТАВЬ СВОИ) ===
   const firebaseConfig = {
-    apiKey: "AIzaSyAF_F3-LODFm7ZDCS5D0x-xq8XJ2e8Atl8",
-    authDomain: "guessthesong-97155.firebaseapp.com",
-    databaseURL: "https://guessthesong-97155-default-rtdb.firebaseio.com",
-    projectId: "guessthesong-97155",
-    storageBucket: "guessthesong-97155.firebasestorage.app",
-    messagingSenderId: "163574999757",
-    appId: "1:163574999757:web:c7d939c4d7a030dde25784",
-    measurementId: "G-9YVHHLLX22"
+    apiKey: "ТВОЙ_API_КЛЮЧ",
+    authDomain: "твой-проект.firebaseapp.com",
+    databaseURL: "https://твой-проект-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "твой-проект",
+    storageBucket: "твой-проект.appspot.com",
+    messagingSenderId: "123456789",
+    appId: "1:123456:web:abcd"
   };
-
   
   if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
   const db = firebase.database();
   let myPlayerId = Math.random().toString(36).substr(2, 9);
   let currentRoomId = null;
   let isHost = false;
-  let multiplayerMode = false;
+  let isMultiplayer = false;
+  let inMultiplayerMatch = false;
+  let mpRoomRef = null;
 
-  try {
-    const saved = localStorage.getItem('gs5_stats');
-    if (saved) stats = JSON.parse(saved);
-  } catch(e) {}
+  try { const saved = localStorage.getItem('gs5_stats'); if (saved) stats = JSON.parse(saved); } catch(e) {}
 
   const audio=$('audio');
   let lastVolume = 1;
@@ -60,7 +56,7 @@
   document.body.addEventListener('click', e => { const btn = e.target.closest('button'); if (btn && !btn.classList.contains('answer-btn')) sfx.click(); });
 
   function setScreen(name){document.querySelectorAll('.screen').forEach(el=>el.classList.toggle('active',el.id===name+'Screen'));window.scrollTo({top:0,behavior:'smooth'})}
-  function saveStats() { try { localStorage.setItem('gs5_stats', JSON.stringify(stats)); } catch(e){} updateHomeStats(); if (player) player.setData(stats).catch(()=>{}); if (lb && stats.bestScore > 0 && !multiplayerMode) lb.setLeaderboardScore('topplayers', stats.bestScore).catch(()=>{}); }
+  function saveStats() { try { localStorage.setItem('gs5_stats', JSON.stringify(stats)); } catch(e){} updateHomeStats(); if (player) player.setData(stats).catch(()=>{}); if (lb && stats.bestScore > 0 && !isMultiplayer) lb.setLeaderboardScore('topplayers', stats.bestScore).catch(()=>{}); }
   function updateHomeStats(){$('bestScore').textContent=stats.bestScore.toLocaleString('ru-RU');$('roundsPlayed').textContent=stats.roundsPlayed}
   function toast(message){const node=$('toast');node.textContent=message;node.classList.add('show');clearTimeout(node._timer);node._timer=setTimeout(()=>node.classList.remove('show'),2400)}
   function shuffle(list){return[...list].sort(()=>Math.random()-.5)}
@@ -76,6 +72,7 @@
 
   function setCatalogStatus(text,mode=''){const node=$('catalogStatus');node.textContent=text;node.className=`status-chip ${mode}`}
 
+  // --- Загрузка и Яндекс ---
   async function loadCatalog() {
     setCatalogStatus('Загрузка локальной базы...');
     try {
@@ -83,8 +80,7 @@
       if (!response.ok) throw new Error('Файл catalog.json не найден');
       const data = await response.json();
       if (!data || data.length < 4) throw new Error('Слишком мало треков');
-      state.catalog = shuffle(data);
-      state.usingDemo = false;
+      state.catalog = shuffle(data); state.usingDemo = false;
       setCatalogStatus(`${state.catalog.length} треков готовы`, 'online');
     } catch (error) {
       state.catalog = demoTracks; state.usingDemo = true;
@@ -103,6 +99,7 @@
         }).then(data => {
           if (data && data.bestScore !== undefined) {
             stats.bestScore = Math.max(stats.bestScore, data.bestScore || 0);
+            stats.bestStreak = Math.max(stats.bestStreak, data.bestStreak || 0);
             stats.roundsPlayed = Math.max(stats.roundsPlayed, data.roundsPlayed || 0);
             updateHomeStats();
           }
@@ -113,11 +110,8 @@
   function updateLeaderboardUI() {
     if (!lb) return;
     lb.getLeaderboardEntries('topplayers', { quantityTop: 3 }).then(res => {
-        const cards = document.querySelectorAll('.side-card'); let lbCard = null;
-        cards.forEach(c => { if(c.querySelector('h2') && c.querySelector('h2').textContent.includes('Сегодня в топе')) lbCard = c; });
-        if (!lbCard) return;
-        let html = '<h2>Сегодня в топе</h2>';
-        if (!res.entries || res.entries.length === 0) { html += '<div class="mini-leader"><span class="player" style="color:var(--muted)">Пока нет рекордов. Стань первым!</span></div>'; } 
+        let html = '';
+        if (!res.entries || res.entries.length === 0) { html = '<div class="mini-leader"><span class="player" style="color:var(--muted)">Стань первым!</span></div>'; } 
         else {
           res.entries.forEach(entry => {
             const rank = entry.rank < 10 ? '0' + entry.rank : entry.rank;
@@ -125,7 +119,7 @@
             html += `<div class="mini-leader"><span class="rank">#${rank}</span><span class="player">${escapeHtml(name)}</span><span class="score">${entry.score.toLocaleString('ru-RU')}</span></div>`;
           });
         }
-        lbCard.innerHTML = html;
+        $('leaderboardContainer').innerHTML = html;
       }).catch(()=>{});
   }
 
@@ -137,176 +131,150 @@
     state.ysdk.adv.showRewardedVideo({ callbacks: { onOpen: sysPauseAudio, onRewarded: onReward, onClose: sysResumeAudio, onError: () => { sysResumeAudio(); toast('Реклама недоступна'); if(onFail) onFail(); } } });
   }
 
-  // === СЕТЕВАЯ ЛОГИКА (ЛОББИ) ===
-  $('btnSolo').addEventListener('click', () => { multiplayerMode = false; startGameSolo(); });
-  $('btn1v1').addEventListener('click', () => { multiplayerMode = true; startMatchmaking(); });$('btnCustom').addEventListener('click', () => { multiplayerMode = true; showCustomLobbyMenu(); });
+  // --- МУЛЬТИПЛЕЕР (МОДАЛКА И СЕТЬ) ---
+  $('btn1v1').addEventListener('click', () => { showFullscreenAd(); startMatchmaking(); });$('btnCustom').addEventListener('click', () => { showFullscreenAd(); showLobbyModal(); });
 
-  function showCustomLobbyMenu() {
-    setScreen('lobby');
-    $('lobbyTitle').textContent = 'Игра с друзьями';
-    $('roomCodeBox').style.display = 'none';
-    $('joinBox').style.display = 'block';$('playersList').innerHTML = '<button class="primary-btn" id="btnCreateRoom" style="width:100%; margin-bottom:20px;">+ Создать свою комнату</button>';
-    $('btnCreateRoom').onclick = createCustomRoom;
-    $('btnStartMultiplayer').style.display = 'none';
-    showFullscreenAd();
+  function showLobbyModal() {
+    $('mpTitle').textContent = 'Своя игра';
+    $('mpSelection').style.display = 'block';
+    $('mpLobby').style.display = 'none';$('mpModal').classList.add('open');
   }
 
-  function createCustomRoom() {
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    currentRoomId = code; isHost = true;
-    db.ref('rooms/' + code).set({ type: 'custom', state: 'waiting', host: myPlayerId, players: { [myPlayerId]: { name: player?.publicName || 'Я (Хост)', score: 0 } } });
-    setupLobbyUI(code); listenToRoom(code);
-  }
+  $('btnCreateRoom').addEventListener('click', () => {
+    currentRoomId = Math.floor(100000 + Math.random() * 900000).toString();
+    isHost = true;
+    joinRoomFirebase(currentRoomId, 'custom');
+  });
 
   $('btnJoinRoom').addEventListener('click', () => {
-    const code = $('roomCodeInput').value.trim();
-    if (code.length !== 6) return toast('Введите 6-значный код');
-    db.ref('rooms/' + code).once('value', snapshot => {
-      if (!snapshot.exists()) return toast('Комната не найдена');
-      if (snapshot.val().state !== 'waiting') return toast('Игра уже началась');
+    const code = $('mpRoomInput').value.trim();
+    if (code.length !== 6) return toast('Введите 6 цифр');
+    db.ref('rooms/' + code).once('value', snap => {
+      if (!snap.exists()) return toast('Комната не найдена');
+      if (snap.val().state !== 'waiting') return toast('Игра уже началась');
       currentRoomId = code; isHost = false;
-      db.ref('rooms/' + code + '/players/' + myPlayerId).set({ name: player?.publicName || 'Игрок', score: 0 });
-      setupLobbyUI(code); listenToRoom(code);
+      joinRoomFirebase(currentRoomId, 'custom');
     });
   });
 
   function startMatchmaking() {
-    setScreen('lobby');
-    $('lobbyTitle').textContent = 'Поиск соперника...';
-    $('joinBox').style.display = 'none'; $('roomCodeBox').style.display = 'none';$('playersList').innerHTML = '<div class="loading-dots"><i></i><i></i><i></i></div>';
-    $('btnStartMultiplayer').style.display = 'none';
+    $('mpTitle').textContent = 'Поиск 1 на 1...';
+    $('mpSelection').style.display = 'none'; $('mpLobby').style.display = 'block';$('mpCodeBlock').style.display = 'none'; $('btnStartMp').style.display = 'none';$('mpPlayersList').innerHTML = '<div style="text-align:center; margin:20px 0;"><div class="loading-dots" style="color:var(--violet); transform:scale(1.5);"><i></i><i></i><i></i></div></div>';
+    $('mpModal').classList.add('open');
 
     db.ref('rooms').orderByChild('type').equalTo('1v1').once('value', snap => {
       let found = false;
       snap.forEach(child => {
          let room = child.val();
          if (room.state === 'waiting' && Object.keys(room.players || {}).length === 1) {
-            currentRoomId = child.key; isHost = false;
-            db.ref('rooms/' + currentRoomId + '/players/' + myPlayerId).set({ name: player?.publicName || 'Соперник', score: 0 });
-            listenToRoom(currentRoomId); found = true; return true;
+            currentRoomId = child.key; isHost = false; found = true;
+            joinRoomFirebase(currentRoomId, '1v1'); return true;
          }
       });
       if (!found) {
          currentRoomId = Math.floor(100000 + Math.random() * 900000).toString(); isHost = true;
-         db.ref('rooms/' + currentRoomId).set({ type: '1v1', state: 'waiting', host: myPlayerId, players: { [myPlayerId]: { name: player?.publicName || 'Я', score: 0 } } });
-         listenToRoom(currentRoomId);
+         joinRoomFirebase(currentRoomId, '1v1');
       }
     });
   }
 
-  function setupLobbyUI(code) {
-    $('joinBox').style.display = 'none'; $('roomCodeBox').style.display = 'block';$('roomCodeDisplay').textContent = code;
-    if (isHost) {
-      $('btnStartMultiplayer').style.display = 'block';$('btnStartMultiplayer').textContent = 'Начать игру';
-      $('btnStartMultiplayer').disabled = false;
+  function joinRoomFirebase(roomId, roomType) {
+    isMultiplayer = true; inMultiplayerMatch = false;
+    $('mpSelection').style.display = 'none';$('mpLobby').style.display = 'block';
+    if(roomType === 'custom') {
+       $('mpCodeBlock').style.display = 'block';$('mpRoomCodeDisplay').textContent = roomId;
     }
-  }
 
-  function listenToRoom(code) {
-    db.ref('rooms/' + code).on('value', snapshot => {
-      const data = snapshot.val();
-      if (!data) return leaveLobby(); 
+    mpRoomRef = db.ref('rooms/' + roomId);
+    if (isHost) {
+      mpRoomRef.set({ type: roomType, state: 'waiting', host: myPlayerId, players: { [myPlayerId]: { name: player?.publicName || 'Я (Хост)', score: 0 } } });
+      if(roomType === 'custom') $('btnStartMp').style.display = 'block';
+    } else {
+      mpRoomRef.child('players/' + myPlayerId).set({ name: player?.publicName || 'Игрок', score: 0 });
+    }
+
+    // Слушаем изменения в комнате
+    mpRoomRef.on('value', snap => {
+      const data = snap.val();
+      if (!data) return leaveLobby(); // Хост вышел
+      
       const pl = data.players || {};
       
       if (data.state === 'waiting') {
-        $('playersList').innerHTML = Object.keys(pl).map(id => `<div class="player-item"><span class="player-name">${escapeHtml(pl[id].name)}</span><span class="player-status ready">Готов</span></div>`).join('');
+        $('mpPlayersList').innerHTML = Object.keys(pl).map(id => `<div class="mp-player ready"><span>${escapeHtml(pl[id].name)}</span><span style="color:var(--green)">В лобби</span></div>`).join('');
+        // Автостарт для 1 на 1
         if (isHost && data.type === '1v1' && Object.keys(pl).length === 2) {
-          startHostGameProcess();
+          generateAndStartMpGame();
         }
       }
 
       if (data.state === 'playing') {
+        // Обновляем очки на экране игры
         let opsHtml = '';
         for (let id in pl) {
-          if (id !== myPlayerId) opsHtml += `<div style="display:flex; justify-content:space-between; border-bottom:1px solid rgba(255,255,255,0.1); padding:4px 0;"><span>${escapeHtml(pl[id].name)}</span> <b>${pl[id].score}</b></div>`;
+          if (id !== myPlayerId) opsHtml += `<div class="mp-score-item"><span>${escapeHtml(pl[id].name)}</span><b>${pl[id].score}</b></div>`;
         }
-        $('opponentsScores').innerHTML = opsHtml || 'Ждем игроков...';
-        
-        if (!state.preparingGame && state.round === 0 && data.queue) {
-          startMultiplayerGame(data.queue);
+        $('mpOpponentScores').innerHTML = opsHtml || 'Ждем...';
+
+        // Синхронный старт у всех (передаем только ключи треков, чтобы Firebase не съел ссылки!)
+        if (data.queueKeys && !inMultiplayerMatch) {
+          inMultiplayerMatch = true;
+          $('mpModal').classList.remove('open');
+          
+          // Восстанавливаем локальные объекты треков по ключам
+          const mappedQueue = data.queueKeys.map(key => state.catalog.find(t => trackKey(t) === key)).filter(Boolean);
+          
+          if(mappedQueue.length > 3) {
+            state.queue = mappedQueue;
+            resetGameData();
+            $('mpScoreBoard').style.display = 'block';$('formulaCard').style.display = 'none';
+            setScreen('game'); nextRound();
+          } else {
+            toast('Сбой синхронизации каталога'); leaveLobby();
+          }
         }
       }
     });
   }
 
-  $('btnLeaveLobby').addEventListener('click', leaveLobby);
-  function leaveLobby() {
-    if (currentRoomId) {
-      db.ref('rooms/' + currentRoomId + '/players/' + myPlayerId).remove();
-      if (isHost) db.ref('rooms/' + currentRoomId).remove();
-      db.ref('rooms/' + currentRoomId).off();
-    }
-    currentRoomId = null; isHost = false;
-    setScreen('home');
-  }
-
-  // === ВАЛИДАЦИЯ АУДИО ===
-  function validateTrackAudio(track) {
-    const url = String(track?.previewUrl || '').trim();
-    if (!url) return Promise.resolve(false);
-    if (audioValidityCache.has(url)) return Promise.resolve(audioValidityCache.get(url));
-
-    return new Promise(resolve => {
-      const probe = new Audio(); let settled = false;
-      const finish = valid => { if (settled) return; settled = true; clearTimeout(timeout); probe.removeEventListener('canplay', onReady); probe.removeEventListener('error', onError); probe.pause(); probe.removeAttribute('src'); probe.load(); audioValidityCache.set(url, valid); resolve(valid); };
-      const onReady = () => finish(true); const onError = () => finish(false);
-      const timeout = setTimeout(() => finish(false), 6500);
-      probe.preload = 'metadata'; probe.addEventListener('canplay', onReady, { once:true }); probe.addEventListener('error', onError, { once:true });
-      probe.src = url; probe.load();
-    });
-  }
-
-  async function collectValidTracks(requiredCount) {
-    const candidates = shuffle(state.catalog).filter(track => track?.previewUrl);
-    const valid = []; const checkedUrls = new Set(); const batchSize = 6;
-    for (let index = 0; index < candidates.length && valid.length < requiredCount; index += batchSize) {
-      const batch = candidates.slice(index, index + batchSize).filter(track => { const url = String(track.previewUrl || '').trim(); if (!url || checkedUrls.has(url)) return false; checkedUrls.add(url); return true; });
-      const results = await Promise.all(batch.map(validateTrackAudio));
-      batch.forEach((track, i) => { if (results[i] && valid.length < requiredCount) valid.push(track); });
-    }
-    return valid;
-  }
-
-  // === СТАРТ ИГРЫ ===
-  $('btnStartMultiplayer').addEventListener('click', startHostGameProcess);
+  $('btnStartMp').addEventListener('click', generateAndStartMpGame);
   
-  async function startHostGameProcess() {
-    if (!isHost) return;
-    $('btnStartMultiplayer').disabled = true; $('btnStartMultiplayer').textContent = 'Подготовка треков...';
-    const validTracks = await collectValidTracks(CONFIG.roundsPerGame);
-    if(validTracks.length < CONFIG.roundsPerGame) { toast('Ошибка каталога'); $('btnStartMultiplayer').disabled = false; return; }
-    db.ref('rooms/' + currentRoomId).update({ state: 'playing', queue: validTracks });
+  function generateAndStartMpGame() {
+    if (!isHost || !mpRoomRef) return;
+    $('btnStartMp').disabled = true; $('btnStartMp').textContent = 'Готовим треки...';
+    // Отправляем только ID-шники (чтобы Firebase не сломал структуру объектов)
+    const queueKeys = shuffle(state.catalog).slice(0, CONFIG.roundsPerGame).map(trackKey);
+    mpRoomRef.update({ state: 'playing', queueKeys: queueKeys });
   }
 
-  async function startGameSolo() {
-    if(state.catalog.length<4){toast('Каталог загружается');return}
-    if(state.preparingGame) return;
-    state.preparingGame=true; $('btnSolo').disabled=true; $('btnSolo').textContent='Проверяем аудио…';
-    try {
-      const validTracks=await collectValidTracks(CONFIG.roundsPerGame);
-      if(validTracks.length<CONFIG.roundsPerGame){ toast('Мало треков'); return; }
-      state.queue=shuffle(validTracks);
-      resetGameData();
-      $('multiplayerStats').style.display = 'none';
-      setScreen('game'); nextRound();
-    } finally { state.preparingGame=false; $('btnSolo').disabled=false; $('btnSolo').textContent='👤 Играть одному'; }
+  $('mpModalClose').addEventListener('click', leaveLobby);
+  function leaveLobby() {
+    if (mpRoomRef) {
+      mpRoomRef.child('players/' + myPlayerId).remove();
+      if (isHost) mpRoomRef.remove();
+      mpRoomRef.off();
+    }
+    isMultiplayer = false; inMultiplayerMatch = false; mpRoomRef = null; currentRoomId = null; isHost = false;
+    $('mpModal').classList.remove('open'); setScreen('home');
   }
 
-  function startMultiplayerGame(sharedQueue) {
-    state.preparingGame = true;
-    state.queue = sharedQueue;
+  // --- ОДИНОЧНАЯ ИГРА И ЛОГИКА РАУНДОВ ---
+  $('startBtn').addEventListener('click', startGameSolo);
+
+  function startGameSolo(){
+    if(state.catalog.length<4){toast('Каталог ещё загружается');return}
+    isMultiplayer = false;
+    state.queue=shuffle(state.catalog).slice(0,CONFIG.roundsPerGame);
     resetGameData();
-    $('multiplayerStats').style.display = 'block';
+    $('mpScoreBoard').style.display = 'none';$('formulaCard').style.display = 'block';
     setScreen('game'); nextRound();
-    state.preparingGame = false;
   }
-
+  
   function resetGameData() {
-    state.round=0; state.score=0; state.streak=0; state.bestStreak=0; state.correct=0;
-    state.lives=CONFIG.maxLives; state.hintUsed=false; state.reviveUsed=false;
+    state.round=0; state.score=0; state.streak=0; state.bestStreak=0; state.correct=0; state.lives=CONFIG.maxLives; state.hintUsed=false; state.reviveUsed=false;
     $('scoreLabel').textContent='0'; updateHearts();
   }
-  
+
   function updateHearts(){$('hearts').innerHTML=Array.from({length:CONFIG.maxLives},(_,i)=>`<span class="heart ${i<state.lives?'live':''}">♥</span>`).join('')}
   
   function buildOptions(answer){
@@ -317,7 +285,7 @@
   }
   
   function askRevive() {
-    if (multiplayerMode) return finishGame(); 
+    if (isMultiplayer) return finishGame(); // В мультиплеере нет возрождений, игра идет на счет
     $('modalTitle').textContent = 'Вторая попытка'; $('modalText').textContent = 'Жизни кончились! Посмотри рекламу, чтобы получить +1 жизнь.';
     $('modalActions').innerHTML = '<button id="btnRevive" class="primary-btn" type="button">🎥 Продолжить</button><button id="btnDie" class="secondary-btn" type="button">Сдаться</button>';
     $('modal').classList.add('open');
@@ -329,7 +297,7 @@
     $('modalTitle').textContent = 'Выход'; $('modalText').textContent = 'Завершить раунд и выйти на главную?';
     $('modalActions').innerHTML = '<button id="btnConfirmQuit" class="primary-btn" type="button" style="background:var(--danger)">Выйти</button><button id="btnCancelQuit" class="secondary-btn" type="button">Продолжить</button>';
     $('modal').classList.add('open');
-    $('btnConfirmQuit').onclick = () => {$('modal').classList.remove('open'); clearTimer(); try { audio.pause(); } catch(e) {} leaveLobby(); };
+    $('btnConfirmQuit').onclick = () => {$('modal').classList.remove('open'); clearTimer(); try { audio.pause(); } catch(e) {} if(isMultiplayer) leaveLobby(); else setScreen('home'); };
     $('btnCancelQuit').onclick = () => {$('modal').classList.remove('open'); };
   }
 
@@ -344,7 +312,7 @@
     $('questionSub').textContent=state.usingDemo?'Демо-режим: нет аудиофайлов':'Фрагмент готов — включай и выбирай';
     $('timeProgress').style.width='0\%';$('playClipBtn').textContent='▶ Слушать 5 сек';
     $('playClipBtn').disabled=false;
-    $('hintBtn').disabled=multiplayerMode; 
+    $('hintBtn').disabled=isMultiplayer; // Без подсказок в онлайне
     
     renderCover(state.current); buildOptions(state.current);
     if(state.current.previewUrl){audio.src=state.current.previewUrl;audio.load()}else audio.removeAttribute('src')
@@ -352,33 +320,26 @@
   
   function clearTimer(){ clearInterval(state.timer); state.timer=null; $('soundWave').classList.remove('playing'); const vinyl =$('vinylSvg'); if(vinyl) vinyl.style.animation = 'none'; }
   
-  async function replaceUnavailableRound() {
-    $('playClipBtn').disabled = true; $('playClipBtn').textContent = 'Ищем замену…';
-    const used = new Set(state.queue.slice(0, state.round).map(trackKey));
-    const candidates = shuffle(state.catalog).filter(track => !used.has(trackKey(track)));
-    for (const candidate of candidates) {
-      if (await validateTrackAudio(candidate)) {
-        state.queue[state.round - 1] = candidate; state.current = candidate;
-        renderCover(candidate); buildOptions(candidate);
-        audio.src = candidate.previewUrl; audio.load();
-        $('questionSub').textContent = 'Трек заменён — можно слушать'; $('roundStatus').textContent = 'Ждём твоего ответа';
-        $('playClipBtn').disabled = false; $('playClipBtn').textContent = '▶ Слушать 5 сек';
-        return;
-      }
-    }
-    $('playClipBtn').disabled = false; $('playClipBtn').textContent = '▶ Повторить поиск'; $('roundStatus').textContent = 'Нет доступного аудио'; toast('Не удалось найти замену');
-  }
-
   function playClip() {
     if(state.timer || state.answered) return; 
+    
+    // Невидимый хук для разблокировки аудио-контекста в браузере (критично для мультиплеера)
+    if(isMultiplayer && state.round === 1 && audio.src) { audio.play().catch(()=>{}); audio.pause(); }
+
     state.clipStarted = true; $('playClipBtn').disabled = true; $('playClipBtn').textContent = '♪ Играет…'; $('roundStatus').textContent = 'Слушай внимательно'; $('soundWave').classList.add('playing');
     const vinyl = $('vinylSvg'); if(vinyl) vinyl.style.animation = 'spin 2s linear infinite';
+    
     if(audio.src) {
       audio.currentTime = 0;
       audio.play().catch((e) => {
-          audioValidityCache.set(state.current.previewUrl, false); clearTimer(); state.clipStarted = false;
-          if (multiplayerMode) { toast('Сбой трека. Угадывай наугад!'); $('playClipBtn').textContent = 'Сбой аудио'; $('roundStatus').textContent = 'Выбирай вариант'; } 
-          else { $('playClipBtn').disabled = false; $('playClipBtn').textContent = '▶ Другой трек'; toast('Заменяем трек'); replaceUnavailableRound(); }
+          clearTimer(); state.clipStarted = false;
+          if (isMultiplayer) { toast('Сбой трека. Угадывай наугад!'); $('playClipBtn').textContent = 'Сбой аудио'; $('roundStatus').textContent = 'Выбирай вариант'; } 
+          else { 
+            // Одиночная игра: тихая замена сломанного трека
+            toast('Сбой аудио — заменяем трек');
+            state.round--; state.queue.splice(state.round, 1); state.queue.push(state.catalog[Math.floor(Math.random() * state.catalog.length)]);
+            nextRound(); setTimeout(playClip, 100);
+          }
       });
     } else { toast('Нет аудиофайла'); }
     
@@ -411,13 +372,16 @@
     }
     $('scoreLabel').textContent=state.score.toLocaleString('ru-RU');$('streakLabel').textContent=`Стрик ${state.streak}`;$('hintBtn').disabled=true;
     
-    if (multiplayerMode && currentRoomId) { db.ref(`rooms/${currentRoomId}/players/${myPlayerId}/score`).set(state.score); }
+    // Синхронизация счета
+    if (isMultiplayer && mpRoomRef) { mpRoomRef.child('players/' + myPlayerId + '/score').set(state.score); }
     setTimeout(()=>nextRound(),correct?900:1300)
   }
 
+  function useHint(){if(state.answered||state.hintUsed)return;showRewardedAd(()=>{state.hintUsed=true;const buttons=[...document.querySelectorAll('.answer-btn')];buttons.forEach((btn,i)=>{if(state.options[i].artistName!==state.current.artistName){btn.disabled=true;btn.style.opacity='.35'}});$('hintBtn').disabled=true;toast(`Подсказка: исполнитель — ${state.current.artistName}`)})}
+  
   function finishGame(){
     clearTimer();
-    if (!multiplayerMode) {
+    if (!isMultiplayer) {
       stats.bestScore=Math.max(stats.bestScore,state.score);stats.bestStreak=Math.max(stats.bestStreak,state.bestStreak);stats.roundsPlayed++;saveStats();
       $('finalScore').textContent=state.score.toLocaleString('ru-RU');$('finalCorrect').textContent=`${state.correct}/${CONFIG.roundsPerGame}`;$('finalStreak').textContent=state.bestStreak;$('finalMultiplier').textContent=`×${state.bestStreak>=5?3:state.bestStreak>=3?2:1}`;
       $('resultTitle').textContent=state.lives<=0?'Жизни закончились':'Раунд окончен';
@@ -430,35 +394,41 @@
       $('finalScore').textContent=state.score.toLocaleString('ru-RU');$('finalCorrect').textContent=`${state.correct}/${CONFIG.roundsPerGame}`;$('finalStreak').textContent='—';$('finalMultiplier').textContent='—';
       setScreen('result');
       
-      db.ref(`rooms/${currentRoomId}/players`).once('value', snap => {
-         let players = []; snap.forEach(p => { players.push(p.val()); });
-         players.sort((a,b) => b.score - a.score);
-         let rankHtml = players.map((p, i) => `<div style="font-size:18px; margin:10px 0;">#${i+1} <b>${escapeHtml(p.name)}</b>: ${p.score}</div>`).join('');
-         $('resultCopy').innerHTML = rankHtml;
-      });
-      if (isHost) setTimeout(() => { db.ref('rooms/' + currentRoomId).remove(); currentRoomId = null; isHost = false; }, 5000);
-      else currentRoomId = null;
+      if(mpRoomRef) {
+        mpRoomRef.child('players').once('value', snap => {
+           let players = []; snap.forEach(p => { players.push(p.val()); });
+           players.sort((a,b) => b.score - a.score);
+           let rankHtml = players.map((p, i) => `<div style="font-size:18px; margin:10px 0;">#${i+1} <b>${escapeHtml(p.name)}</b>: ${p.score}</div>`).join('');
+           $('resultCopy').innerHTML = rankHtml;
+        });
+      }
+      setTimeout(() => { leaveLobby(); }, 8000);
     }
   }
 
   $('playClipBtn').addEventListener('click',playClip);
-  $('againBtn').addEventListener('click', () => { if (multiplayerMode) setScreen('home'); else startGameSolo(); });$('homeBtn').addEventListener('click',()=>setScreen('home'));
-  $('helpBtn').addEventListener('click',()=>{$('modalTitle').textContent='Как играть'; $('modalText').textContent='За раунд нужно угадать 10 песен. Правильные ответы увеличивают стрик. Ошибка отнимает жизнь.'; $('modalActions').innerHTML='<button id="modalOk" class="primary-btn">Понятно</button>'; $('modal').classList.add('open');$('modalOk').onclick=()=>$('modal').classList.remove('open'); });$('modalClose').addEventListener('click', ()=>{$('modal').classList.remove('open');});$('volumeSlider').addEventListener('input', (e) => { 
+  $('againBtn').addEventListener('click', () => { if (isMultiplayer) setScreen('home'); else startGameSolo(); });$('homeBtn').addEventListener('click',()=>setScreen('home'));
+  
+  $('helpBtn').addEventListener('click',()=>{$('modalTitle').textContent='Как играть'; 
+    $('modalText').textContent='За раунд нужно угадать 10 песен. Правильные ответы увеличивают стрик. Ошибка отнимает жизнь.'; 
+    $('modalActions').innerHTML='<button id="modalOk" class="primary-btn">Понятно</button>'; 
+    $('modal').classList.add('open'); 
+    $('modalOk').onclick=()=>$('modal').classList.remove('open'); 
+  });
+  
+  $('modalClose').addEventListener('click', ()=>{$('modal').classList.remove('open');});$('volumeSlider').addEventListener('input', (e) => { 
     const v = parseFloat(e.target.value); 
     audio.volume = v; 
     if (v > 0) lastVolume = v; 
     $('soundToggle').textContent = v === 0 ? '🔇' : (v < 0.5 ? '🔉' : '🔊'); 
   });
+  
   $('soundToggle').textContent = '🔊';
   $('soundToggle').addEventListener('click', () => { 
     if (audio.volume > 0) { 
-      audio.volume = 0; 
-      $('volumeSlider').value = 0; 
-      $('soundToggle').textContent = '🔇'; 
+      audio.volume = 0; $('volumeSlider').value = 0; $('soundToggle').textContent = '🔇'; 
     } else { 
-      audio.volume = lastVolume || 1; 
-      $('volumeSlider').value = lastVolume || 1; 
-      $('soundToggle').textContent = lastVolume < 0.5 ? '🔉' : '🔊'; 
+      audio.volume = lastVolume || 1; $('volumeSlider').value = lastVolume || 1; $('soundToggle').textContent = lastVolume < 0.5 ? '🔉' : '🔊'; 
     } 
   });
   
