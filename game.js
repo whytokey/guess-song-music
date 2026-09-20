@@ -190,7 +190,7 @@
     mpRoomRef = db.ref('rooms/' + roomId);
     if (isHost) {
       mpRoomRef.onDisconnect().remove(); // Удаляем комнату, если хост закрыл вкладку
-      mpRoomRef.set({ type: roomType, state: 'waiting', host: myPlayerId, players: { [myPlayerId]: { name: player?.publicName || 'Я (Хост)', score: 0, roundState: 0 } } });
+      mpRoomRef.set({ type: roomType, state: 'waiting', host: myPlayerId, players: { [myPlayerId]: { name: player?.publicName || 'Хост', score: 0, roundState: 0 } } });
       if (roomType === 'custom') $('btnStartMp').style.display = 'block';
     } else {
       mpRoomRef.child('players/' + myPlayerId).onDisconnect().remove();
